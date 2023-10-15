@@ -1,7 +1,7 @@
 extern crate ndarray;
 extern crate rand;
 
-use ndarray::{Array, Array1, Array2};
+use ndarray::{Array, Array1, Array2, Axis};
 use rand::distributions::{Distribution, Uniform};
 use std::f64::consts::E;
 
@@ -57,6 +57,12 @@ impl<A: Activation> DenseLayer<A> {
             weights,
             activation,
         }
+    }
+    pub fn backward(&self, d_output: Array1<f64>, z: Array1<f64>) -> (Array2<f64>, Array1<f64>) {
+        let activation_prime = self.activation.gradient(&z);
+        let d_z = d_output.dot(&self.weights.t()) * activation_prime;
+        let d_weights: Array2<f64> = z.insert_axis(Axis(1)).dot(&d_output.insert_axis(Axis(0)));
+        (d_weights, d_z)
     }
 }
 
