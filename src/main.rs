@@ -12,6 +12,14 @@ fn rand_array1(len: usize, min: f64, max: f64) -> Array1<f64> {
     Array::from_shape_fn(len, |_| dist.sample(&mut rng))
 }
 
+// Util
+fn argmax_1d(array: &Array1<f64>) -> usize {
+    array.iter()
+         .enumerate()
+         .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
+         .map(|(index, _)| index)
+         .unwrap_or(0)
+}
 
 // Traits
 
@@ -120,7 +128,6 @@ impl<A: Activation> Layer for DenseLayer<A> {
         let d_weights: Array2<f64> = self.last_input.clone().t().insert_axis(Axis(1)).dot(&delta.clone().insert_axis(Axis(0)));
         let weights_no_bias = self.weights.slice(s![1.., ..]);
         let d_input = weights_no_bias.dot(&delta);
-        // print!("{}\n", delta_output);
 
         (d_weights, d_input)
     }
@@ -181,6 +188,9 @@ impl Model {
         for layer in &mut self.layers {
             data = layer.forward(data);
         }
+        if data.iter().any(|&x| x.is_nan()) {
+            panic!("Numeric overflow error!")
+        }
         data
     }
     pub fn backward(&mut self, y: &Array1<f64>, learning_rate: f64) {
@@ -216,18 +226,19 @@ pub fn cross_entropy_loss(y_true: &Array1<f64>, y_pred: &Array1<f64>) -> f64 {
 
 fn main() {
     // let x = rand_array1(3, -0.5, 0.5);
-    let x = ndarray::array![10.0, 1.0, 1.0];
+    let x = ndarray::array![10.0, 3.0, 1.1];
     let y = ndarray::array![0.0, 1.0, 0.0];
 
     let mut model = Model::new();
     model.add_layer(DenseLayer::new(3, 100, Sigmoid));
     model.add_layer(DenseLayer::new(100, 100, Sigmoid));
+    model.add_layer(DenseLayer::new(100, 100, Sigmoid));
     model.add_layer(DenseLayer::new(100, 3, Linear));
     model.add_layer(Softmax::new());
 
-    model.train(&x, &y, 100, 0.01, true);
-    // let probs = model.forward(&x);
-    // print!("{}\n", probs);
+    model.train(&x, &y, 100, 0.00001, true);
+    let probs = model.forward(&x);
+    print!("{}\n", probs);
     // let loss = cross_entropy_loss(&y, &probs);
     // print!("{}\n", loss);
     // model.backward(&y, 0.1);
