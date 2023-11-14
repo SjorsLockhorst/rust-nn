@@ -1,9 +1,10 @@
 extern crate ndarray;
 extern crate rand;
 
-use ndarray::{Array, Array1, Array2, Axis, s};
+use ndarray::{Array, Array1, Array2, Array3, Axis, s};
 use rand_distr::{Uniform, Distribution};
 use std::f64::consts::E;
+use std::iter::zip;
 
 // Rand util
 fn rand_array1(len: usize, min: f64, max: f64) -> Array1<f64> {
@@ -28,13 +29,14 @@ pub trait Layer {
     fn forward(&mut self, input: Array1<f64>) -> Array1<f64>;
     fn backward(&self, d_output: Array1<f64>) -> (Array2<f64>, Array1<f64>);
     fn update(&mut self, d_weights: Array2<f64>, learning_rate: f64);
+    fn get_weights(&self) -> &Array2<f64>;
 }
 
 // Activation Function
 pub trait Activation {
     fn apply(&self, input: &Array1<f64>) -> Array1<f64>;
     fn gradient(&self, z: &Array1<f64>) -> Array1<f64>;
-    fn init_weights(&self, shape: (usize, usize)) -> Array2<f64>;
+    fn get_default_weight_init(&self, shape: (usize, usize)) -> Array2<f64>;
 }
 
 // Activation functions definitions
@@ -49,7 +51,7 @@ impl Activation for Linear {
     fn gradient(&self, z: &Array1<f64>) -> Array1<f64> {
         Array1::<f64>::ones(z.raw_dim())
     }
-    fn init_weights(&self, shape: (usize, usize)) -> Array2<f64> {
+    fn get_default_weight_init(&self, shape: (usize, usize)) -> Array2<f64> {
         Array2::<f64>::ones(shape)
     }
 }
@@ -63,7 +65,7 @@ impl Activation for Relu {
     fn gradient(&self, z: &Array1<f64>) -> Array1<f64> {
         z.mapv(|x| if x > 0.0 {1.0} else {0.0})
     }
-    fn init_weights(&self, shape: (usize, usize)) -> Array2<f64> {
+    fn get_default_weight_init(&self, shape: (usize, usize)) -> Array2<f64> {
         Array2::<f64>::from_elem(shape, (2.0_f64).sqrt())
     }
 }
@@ -81,7 +83,7 @@ impl Activation for Sigmoid {
     fn gradient(&self, z: &Array1<f64>) -> Array1<f64> {
         z * &(Array1::<f64>::ones(z.raw_dim()) - z)
     }
-    fn init_weights(&self, shape: (usize, usize)) -> Array2<f64> {
+    fn get_default_weight_init(&self, shape: (usize, usize)) -> Array2<f64> {
         Array2::<f64>::ones(shape)
     }
 }
@@ -95,7 +97,7 @@ pub struct DenseLayer<A: Activation> {
 }
 impl<A: Activation> DenseLayer<A> {
     pub fn new(input_size: usize, output_size: usize, activation: A) -> Self {
-        let weights = activation.init_weights((input_size + 1, output_size)); 
+        let weights = activation.get_default_weight_init((input_size + 1, output_size)); 
 
         DenseLayer {
             weights,
@@ -135,37 +137,28 @@ impl<A: Activation> Layer for DenseLayer<A> {
         let update = learning_rate * d_weights;
         self.weights = &self.weights + -1.0 * update;
     }
-
-}
-
-pub struct Softmax {
-    last_output: Array1<f64>
-}
-impl Softmax {
-    fn new() -> Self {
-        Softmax { last_output: Array1::<f64>::zeros(1) }
+    fn get_weights(&self) -> &Array2<f64> {
+        &self.weights
     }
 }
 
-impl Layer for Softmax {
-    fn forward(&mut self, input: Array1<f64>) -> Array1<f64> {
+pub struct Softmax;
+
+impl Activation for Softmax {
+    fn apply(&self, input: &Array1<f64>) -> Array1<f64> {
         // Remove added first bias term
         let max_val = input.sum();
         let exps = input.mapv(|x| E.powf(x - max_val));
         let sum_exps = exps.sum();
         let probs = exps / sum_exps;
-        self.last_output = probs.clone();
         probs
     }
-    fn backward(&self, true_labels: Array1<f64>) -> (Array2<f64>, Array1<f64>) {
-        // The gradient is the difference between the output probabilities and the true labels
-        let d_z = &self.last_output - &true_labels;
-        
-        let d_weights = Array2::<f64>::zeros((0, 0));
-        
-        (d_weights, d_z)
+    fn gradient(&self, z: &Array1<f64>) -> Array1<f64> {
+        Array1::ones(z.shape()[0])
     }
-    fn update(&mut self, _: Array2<f64>, _: f64) {}
+    fn get_default_weight_init(&self, shape: (usize, usize)) -> Array2<f64> {
+        Array2::<f64>::ones(shape)
+    }
 }
 
 
@@ -179,6 +172,11 @@ impl Model {
         Model { layers: Vec::new() }
     }
 
+    fn update(&mut self, weights_per_layer: Vec<Array2<f64>>, learning_rate: f64) {
+        for (layer, d_weights) in zip(self.layers.iter_mut(), weights_per_layer) {
+            layer.update(d_weights, learning_rate);
+        }
+    }
     pub fn add_layer<L: Layer + 'static>(&mut self, layer: L) {
         self.layers.push(Box::new(layer));
     }
@@ -189,30 +187,59 @@ impl Model {
             data = layer.forward(data);
         }
         if data.iter().any(|&x| x.is_nan()) {
-            panic!("Numeric overflow error!")
+            panic!("Numeric instability error!")
         }
         data
     }
-    pub fn backward(&mut self, y: &Array1<f64>, learning_rate: f64) {
-        let mut delta = y.clone();
+    pub fn backward(&self, error: &Array1<f64>) -> Vec<Array2<f64>> {
+        let mut delta = error.clone();
         let mut d_weights;
-        for layer in self.layers.iter_mut().rev() {
+        let mut all_d_weights: Vec<Array2<f64>> = Vec::new();
+        for layer in self.layers.iter().rev() {
             (d_weights, delta) = layer.backward(delta);
-            layer.update(d_weights, learning_rate);
+            all_d_weights.push(d_weights.to_owned())
         }
+        all_d_weights.reverse();
+        all_d_weights
     }
-    pub fn train(&mut self, x: &Array1<f64>, y: &Array1<f64>, epochs: i16, learning_rate: f64, verbose: bool) {
-        for epoch in 0..epochs {
-            let probs = self.forward(x);
-            let loss = cross_entropy_loss(&y, &probs);
-            if verbose {
-                print!("Epoch {}, CE loss: {}\n", epoch + 1, loss);
-                print!("Prediction: {}\n", probs);
-            }
-            self.backward(&y, learning_rate)
-        }
-    }
+    pub fn train(&mut self, x: &Array2<f64>, y: &Array2<f64>, epochs: u16, learning_rate: f64) {
+        // Devide x and y into batches by batch size
 
+        let batch_size = x.len_of(Axis(0));
+
+        for epoch in 0..epochs {
+            let mut batch_d_weights_sum: Vec<Array2<f64>> = Vec::new();
+            let mut initialized = false;
+
+            print!("Epoch: {epoch}\n");
+            for (x_i, y_i) in zip(x.axis_iter(Axis(0)), y.axis_iter(Axis(0))) {
+                let probs = self.forward(&x_i.to_owned());
+                let error = probs - &y_i;
+                let all_d_weights = self.backward(&error);
+
+                let probs = self.forward(&x_i.to_owned());
+                let loss = cross_entropy_loss(&y_i.to_owned(), &probs);
+                print!("Loss: {loss}\n");
+
+                if !initialized {
+                    batch_d_weights_sum = all_d_weights.iter().map(|dw| dw.clone()).collect();
+                    initialized = true;
+                } else {
+                    for (sum, dw) in batch_d_weights_sum.iter_mut().zip(all_d_weights.iter()) {
+                        *sum += dw;
+                    }
+                }
+            }
+
+            // Average the gradients across all mini-batches
+            for layer_d_weights in batch_d_weights_sum.iter_mut() {
+                *layer_d_weights /= batch_size as f64;
+            }
+            self.update(batch_d_weights_sum, learning_rate);
+
+
+        }
+    }
 }
 
 pub fn cross_entropy_loss(y_true: &Array1<f64>, y_pred: &Array1<f64>) -> f64 {
@@ -226,19 +253,22 @@ pub fn cross_entropy_loss(y_true: &Array1<f64>, y_pred: &Array1<f64>) -> f64 {
 
 fn main() {
     // let x = rand_array1(3, -0.5, 0.5);
-    let x = ndarray::array![10.0, 3.0, 1.1];
-    let y = ndarray::array![0.0, 1.0, 0.0];
+    let x = ndarray::array![
+        [10.0, 3.0, 1.1],
+        [-10.0, 10.0, 10.0]
+    ];
+    let y = ndarray::array![
+        [0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0],
+    ];
 
     let mut model = Model::new();
-    model.add_layer(DenseLayer::new(3, 100, Sigmoid));
-    model.add_layer(DenseLayer::new(100, 100, Sigmoid));
-    model.add_layer(DenseLayer::new(100, 100, Sigmoid));
-    model.add_layer(DenseLayer::new(100, 3, Linear));
-    model.add_layer(Softmax::new());
+    model.add_layer(DenseLayer::new(3, 10, Sigmoid));
+    model.add_layer(DenseLayer::new(10, 3, Softmax));
 
-    model.train(&x, &y, 100, 0.00001, true);
-    let probs = model.forward(&x);
-    print!("{}\n", probs);
+    model.train(&x, &y, 100, 0.01);
+    // let probs = model.forward(&x);
+    // print!("{}\n", probs);
     // let loss = cross_entropy_loss(&y, &probs);
     // print!("{}\n", loss);
     // model.backward(&y, 0.1);
