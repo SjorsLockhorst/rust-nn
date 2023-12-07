@@ -22,6 +22,13 @@ fn argmax_1d(array: &Array1<f64>) -> usize {
          .unwrap_or(0)
 }
 
+fn probs_to_onehot(probs: &Array1<f64>) -> Array1<f64> {
+    let max_idx = argmax_1d(probs);
+    let mut one_hot = Array1::zeros(probs.len());
+    one_hot[max_idx] = 1.0;
+    one_hot
+}
+
 // Traits
 
 // Neural Network Layer
@@ -254,19 +261,34 @@ pub fn cross_entropy_loss(y_true: &Array1<f64>, y_pred: &Array1<f64>) -> f64 {
 fn main() {
     // let x = rand_array1(3, -0.5, 0.5);
     let x = ndarray::array![
+        [-10.0, -3.0, -1.0],
         [10.0, 3.0, 1.1],
-        [-10.0, 10.0, 10.0]
+        [-10.0, -3.0, -1.0],
+        [10.0, 3.0, 1.1]
     ];
     let y = ndarray::array![
+        [1.0, 0.0, 0.0],
         [0.0, 1.0, 0.0],
         [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0]
     ];
 
     let mut model = Model::new();
-    model.add_layer(DenseLayer::new(3, 10, Sigmoid));
-    model.add_layer(DenseLayer::new(10, 3, Softmax));
+    model.add_layer(DenseLayer::new(3, 100, Sigmoid));
+    model.add_layer(DenseLayer::new(100, 3, Softmax));
 
-    model.train(&x, &y, 100, 0.01);
+    model.train(&x, &y, 20, 0.01);
+    print!("After training predictions: \n");
+
+    for x_i in x.axis_iter(Axis(0)) {
+        let probs = model.forward(&x_i.to_owned());
+        print!("{}\n", probs_to_onehot(&probs));
+    }
+
+    print!("True labels\n");
+    print!("{:?}\n", y);
+
+
     // let probs = model.forward(&x);
     // print!("{}\n", probs);
     // let loss = cross_entropy_loss(&y, &probs);
